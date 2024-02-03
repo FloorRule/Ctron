@@ -1,0 +1,30 @@
+Importent Info for writing C code for testing:
+	"\d" - is "\n".
+	"global" - must come before global variable declare.
+	"//" - to start a LINE of comment.
+	only int (and void for functions) are currently fully functional.
+	void function must use "return;"
+	==, ||, &&, <, >, <=, >= are fully functional.
+	!, != are not functional.
+	+=, -=, ++, --, *=, /= are not currently functional (use var = var + num or var).
+Running the Complier (Ctron):
+- Open cmd in the folder:
+	- Type "Ctron -help" or "Ctron -h". It will display usage, options and commands
+	example:
+		"C:\Ctron -help"
+		"Usage:
+		  Ctron [options]
+		  Ctron [source_file] [command]
+		options:
+		        -h                       Display this information.
+		commands:
+		        -o <file>                Place the output into <file>.
+		        -o                           Place the output into [source_file.exe]."
+	- Type "Ctron test.c -o" for an exe file with the name of the source "test.exe".
+	- Type "Ctron test.c -o <file>.exe" for an exe file with the name "<file>".
+Running Bison+Flex:
+- Open cmd in the folder:
+	- Type "Flex_BisonV5.exe test.c" it will generate the file "out.ll".
+	- Type "llc.exe -march=x86 --x86-asm-syntax=intel out.ll" it will turn "out.ll" to x86 assembly code file "out.s".
+	- Type "gcc out.s -o test.exe" it will turn the assembly file to an EXE. 
+	- Type "test.exe" it will run the EXE file.
