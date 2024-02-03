@@ -1,0 +1,1027 @@
+%token VOID FLOAT DOUBLE CHAR INT ASSIGN IF WHILE FOR LPAREN RPAREN LBRACE RBRACE COMMA RETURN
+%left LBRACE RBRACE
+%left RPAREN LPAREN 
+%right ASSIGN 
+%left OR
+%left AND 
+%left "==" "!=" // ==, !=
+
+%left PLUS MINUN
+%left MUL DIV
+
+
+%{
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string>		//std::string.
+ #include <map>			//std::map.
+ #include <memory>		//std::shared_ptr.
+ #include <vector>
+ #include <fstream>
+ #include "dataClass/dataClasses.hpp"
+ #include "dataClass/Helper.hpp"
+ #include "GlobalBuffer/global_buffer.hpp"
+ #include "Syntax.tab.hpp"
+ #include "Sym3/symbolTableV2.h"
+ 
+ void yyerror(const char* s);
+ extern int yylex(void);
+ extern int yywrap(void);
+ extern int yylineno;
+ extern char* yytext;
+ using std::vector;
+ using std::pair;
+ 
+ symbolTable st;
+ 
+ extern FILE * yyin;
+ extern FILE * yyout;
+ FILE* ybugs;
+ 
+ string funcName = "";
+ int offset = 0;
+ 
+ global_buffer gb;
+ 
+ Base* a;
+ 
+ std::vector<string> trueLabelList;
+ std::vector<string> falseLabelList;
+ std::vector<string> opersList;
+ std::vector<int> posL;
+ 
+ std::vector<string> globals;
+ 
+ bool isOrpe = false;
+ bool isGlobalDec = false;
+ 
+ std::vector<string> varL1;
+ std::vector<string> varL2;
+ 
+ string trueL;
+ string falseL;
+ string endL;
+ string startL;
+ string forVar;
+ 
+ std::vector<string> forParts;
+ 
+ bool isiInFor = false;
+ 
+ std::vector<string> getArgs(ParamList *list);
+ int getLen(FILE* yyout);
+ void replaceStatement(global_buffer& gb);
+%}
+
+
+%token <base> ID SEMI PLUS MINUN MUL DIV EQ BE B LE L INTEGER STRING GLOBAL
+%type <base> Funcs FunctionsDecl Params ParamsList ParamDecl Call Statement Expr ExprList RetTypes Type Next INT FLOAT DOUBLE CHAR VOID 
+
+%union {                  /* SEMANTIC RECORD            */
+			/* For returning identifiers  */
+Base* base;
+}
+
+%%
+program: Initial Funcs { }
+ ;
+
+Initial: 
+{
+    gb.insert_command("");
+    gb.insert_command("declare i32 @printf(i8*, ...)");
+    gb.insert_command("");
+	Token* printT3 = new Token("int");
+	Token* printN3 = new Token("printf");
+	st.insertFunc(printN3, printT3, new ParamList());
+}
+
+
+Funcs: { $$ = NULL;}
+ | FunctionsDecl Funcs { $$ = new Functions($1, $2);}
+ ;
+ 
+FunctionsDecl:
+ RetTypes ID { funcName = $2->text;} LPAREN Params RPAREN LBRACE
+ { 
+	if(!st.isFuncDeclared($2->text))
+	{
+		int offset = 0;
+		printf("FUNC %s", funcName.c_str()); 
+		st.open_stack();
+		
+		std::vector<string> args;
+		args = getArgs(static_cast<ParamList*>($5));
+		
+		
+		st.insertFunc(static_cast<Token*>($2) ,static_cast<Token*>($1), static_cast<ParamList*>($5));
+		
+		Token* tk = new Token($1->text);
+		printf("%s\n", tk->text.c_str());
+		declareFunction(gb, tk->text, funcName, args);
+		
+		std::vector<string> ar = st.getArgsId(static_cast<ParamList*>($5));
+		
+		for(int i = 0; i < ar.size(); i++)
+		{
+			string req = st.check_if_param(ar[i], funcName);
+			newLocalVar(gb, funcName, offset, req);
+			offset++;
+		}
+		
+	}else
+	{
+		fprintf(ybugs, "Error in line %d: function already defined\n", yylineno);
+	}
+	
+	
+ } 
+ Statements RBRACE
+ { gb.insert_command("}"); st.close_stack();}
+ | GLOBAL Type D ID SEMI
+ {
+	if(!st.isDeclared($4->text))
+	{
+		st.insert(static_cast<Token*>($4), static_cast<Token*>($2));
+		gb.insert_global_variable_decleration(" @"+$4->text+" = global i32 0");
+		globals.push_back($4->text);
+		isGlobalDec = false;
+	}else
+	{
+		fprintf(ybugs, "Error in line %d: global variable already defined\n", yylineno);
+	}
+ }
+ | GLOBAL Type D ID ASSIGN Expr SEMI
+ {
+	if(!st.isDeclared($4->text))
+	{
+		st.insert(static_cast<Token*>($4), static_cast<Token*>($2));
+		gb.insert_global_variable_decleration(" @"+$4->text+" = global i32 "+static_cast<Num*>($6)->value->text);
+		globals.push_back($4->text);
+		isGlobalDec = false;
+	}else
+	{
+		fprintf(ybugs, "Error in line %d: global variable already defined\n", yylineno);
+	}
+ }
+ ;
+
+D:
+{
+	isGlobalDec = true;
+	printf("global");
+}
+
+RetTypes:
+ Type { $$ = $1; }
+ | VOID { $$ = $1; }
+ ;
+
+Params: { $$ = new ParamList();}
+ | ParamsList { $$ = $1; }
+ ;
+
+ParamsList: 
+ ParamDecl { $$ = new ParamList(static_cast<Element*>($1));}
+ | ParamDecl COMMA ParamsList { $$ = new ParamList(static_cast<Element*>($1), static_cast<ParamList*>($3));};
+ ;
+ 
+ParamDecl: 
+ Type ID { $$ = new Element(static_cast<Token*>($1), static_cast<Token*>($2));};
+ ;
+ 
+Statements:
+ Statement
+ | Statements Statement
+ ;
+ 
+Statement:
+ LBRACE { st.open_stack();} 
+ Statements RBRACE { st.close_stack();}
+ | Type ID SEMI 
+ {
+	$$ = new Element((Token*)$1, (Token*)$2);
+	if(!st.isDeclared($2->text))
+	{
+		st.insert(static_cast<Token*>($2), static_cast<Token*>($1));
+	}else
+	{
+		fprintf(ybugs, "Error in line %d: variable already defined\n", yylineno);
+	}
+	
+	int offset = st.getOffsetofId($2->text);
+	newLocalVar(gb, funcName, offset);
+	
+ }
+ | Type ID ASSIGN Expr SEMI 
+ { 
+	$$ = new Element((Token*)$1, (Token*)$2, (Token*)$4);
+	
+	validateAssignment(ybugs, yylineno, static_cast<Token*>($1), static_cast<Exp*>($4));
+	if(!st.isDeclared($2->text))
+	{
+		st.insert(static_cast<Token*>($2), static_cast<Token*>($1));
+	}else
+	{
+		fprintf(ybugs, "Error in line %d: variable already defined\n", yylineno);
+	}
+	
+	int offset = st.getOffsetofId($2->text);
+	
+	newLocalVar(gb, funcName, offset, static_cast<Exp*>($4)->reg);
+	
+	printf("DECLARE + EXPR\n"); 
+ }
+ | ID ASSIGN Expr SEMI 
+ { 
+	$$ = new Assign($1, $3);
+	
+	if(st.isDeclared($1->text))
+	{
+		string type = st.get_element_by_id($1->text).second->text;
+		Token* tk = new Token(type);//"int"
+		std::cout << tk->text << " " << static_cast<Exp*>($3)->text << std::endl;
+		validateAssignment(ybugs, yylineno, tk, static_cast<Exp*>($3));
+		int offset = st.getOffsetofId($1->text);
+	
+		newLocalVar(gb, funcName, offset, static_cast<Exp*>($3)->reg);
+	}else
+	{
+		fprintf(ybugs, "Error in line %d: variable undefined\n", yylineno);
+	}
+    
+	printf("ASSIGN\n");
+ }
+ | ID ASSIGN Call SEMI
+ {
+	$$ = new Assign($1, $3);
+	
+	if(st.isDeclared($1->text))
+	{
+		string type = st.get_element_by_id($1->text).second->text;
+		Token* tk = new Token(type);//"int"
+		
+		validateAssignment(ybugs, yylineno, tk, static_cast<Exp*>($3));
+		int offset = st.getOffsetofId($1->text);
+		
+		
+		newLocalVar(gb, funcName, offset, static_cast<Exp*>($3)->reg);
+	}else
+	{
+		fprintf(ybugs, "Error in line %d: variable undefined\n", yylineno);
+	}
+ }
+ | Call SEMI { $$ = $1;};
+ | RETURN SEMI { 
+	
+	if(st.check_return_type(funcName, "VOID"))
+	{
+		$$ = new Return();
+		gb.insert_command("ret void");
+	}else
+	{
+		fprintf(ybugs, "Error in line %d: return type different then func type\n", yylineno);
+	}
+	
+ }
+ | RETURN Expr SEMI 
+ { 
+	
+	if(st.check_return_type(funcName, $2->text))
+	{
+		$$ = new Return($2);
+		Exp* exp = static_cast<Exp*>($2);
+		gb.insert_command(" ret i32 "+static_cast<Exp*>($2)->reg+"\n");
+	}else
+	{
+		fprintf(ybugs, "Error in line %d: return type different then func type\n", yylineno);
+	}
+	
+	
+ }
+ | IF LPAREN Expr RPAREN { st.open_stack(); } Next { printf("IF");} Statement 
+ { 
+	$$ = new If($3, $6);
+	bpatch(gb, $3->truelist, a->label);
+	st.close_stack();
+	
+	posL.clear();
+	varL2.clear();
+	varL1.clear();
+	trueLabelList.clear();
+	falseLabelList.clear();
+	isOrpe = false;
+	
+	gb.insert_command(" br label %"+endL);
+	gb.insert_command(" "+falseL+":");
+	gb.insert_command(" br label %"+endL);
+	gb.insert_command(" "+endL+":");
+ } 
+ | WHILE LPAREN N Expr RPAREN { st.open_stack(); } Next { printf("WHILE");} Statement 
+ { 
+	$$ = new While($4, $7);
+    bpatch(gb, $4->truelist, a->label);
+	
+    int addr = gb.get_commands_container().size();
+    bpatch(gb, makelist({addr,FIRST}), $4->label);
+	
+	st.close_stack();
+	
+	posL.clear();
+	varL2.clear();
+	varL1.clear();
+	trueLabelList.clear();
+	falseLabelList.clear();
+	isOrpe = false;
+	
+	gb.insert_command(" br label %"+startL);
+	gb.insert_command(" "+falseL+":");
+	gb.insert_command(" br label %"+endL);
+	gb.insert_command(" "+endL+":");
+	
+ } 
+ | FOR LPAREN Type ID SEMI 
+ { 
+	st.open_stack(); 
+	
+	if(!st.isDeclared($4->text))
+	{	
+		st.insert(static_cast<Token*>($4), static_cast<Token*>($3));
+	}else
+	{
+		fprintf(ybugs, "Error in line %d: variable already defined\n", yylineno);
+	}
+	
+	int offset = st.getOffsetofId($4->text);
+	
+	newLocalVar(gb, funcName, offset);
+	
+	printf("DECLARE + EXPR\n"); 
+	
+ } 
+ N Expr { isiInFor = true;} SEMI ID ASSIGN Expr { isiInFor = false;} RPAREN Next { printf("FOR");} Statement
+ {
+	std::cout << "---- " << $11->text << " ----- " << $13->text << std::endl;
+	posL.clear();
+	varL2.clear();
+	varL1.clear();
+	trueLabelList.clear();
+	falseLabelList.clear();
+	isOrpe = false;
+	
+	for(int i = 0; i < forParts.size(); i++)
+	{
+		gb.insert_command(forParts[i]);
+	}
+	
+	string type = st.get_element_by_id($11->text).second->text;
+	Token* tk = new Token(type);//"int"
+	
+	validateAssignment(ybugs, yylineno, tk, static_cast<Exp*>($13));
+	int offset = st.getOffsetofId($11->text);
+	
+	newLocalVar(gb, funcName, offset, static_cast<Exp*>($13)->reg);
+	
+	gb.insert_command(" br label %"+startL);
+	gb.insert_command(" "+falseL+":");
+	gb.insert_command(" br label %"+endL);
+	gb.insert_command(" "+endL+":");
+	st.close_stack();
+	forParts.clear();
+ }
+ | FOR LPAREN ID SEMI 
+ { 
+	st.open_stack(); 
+	
+	if(st.isDeclared($3->text))
+	{	
+		int offset = st.getOffsetofId($3->text);
+	
+		newLocalVar(gb, funcName, offset);
+	
+		printf("DECLARE + EXPR\n"); 
+	}else
+	{
+		fprintf(ybugs, "Error in line %d: variable not defined\n", yylineno);
+	}
+	
+ } 
+ N Expr { isiInFor = true;} SEMI ID ASSIGN Expr { isiInFor = false;} RPAREN Next { printf("FOR");} Statement
+ {
+	std::cout << "---- " << $10->text << " ----- " << $12->text << std::endl;
+	posL.clear();
+	varL2.clear();
+	varL1.clear();
+	trueLabelList.clear();
+	falseLabelList.clear();
+	isOrpe = false;
+	
+	for(int i = 0; i < forParts.size(); i++)
+	{
+		gb.insert_command(forParts[i]);
+	}
+	
+	string type = st.get_element_by_id($10->text).second->text;
+	Token* tk = new Token(type);//"int"
+	
+	validateAssignment(ybugs, yylineno, tk, static_cast<Exp*>($12));
+	int offset = st.getOffsetofId($10->text);
+	
+	newLocalVar(gb, funcName, offset, static_cast<Exp*>($12)->reg);
+	
+	gb.insert_command(" br label %"+startL);
+	gb.insert_command(" "+falseL+":");
+	gb.insert_command(" br label %"+endL);
+	gb.insert_command(" "+endL+":");
+	st.close_stack();
+	forParts.clear();
+ }
+ | FOR LPAREN ID ASSIGN Expr SEMI 
+ { 
+	st.open_stack(); 
+	
+	if(st.isDeclared($3->text))
+	{	
+		int offset = st.getOffsetofId($3->text);
+		string type = st.get_element_by_id($3->text).second->text;
+		Token* tk = new Token(type);//"int"
+		
+		validateAssignment(ybugs, yylineno, tk, static_cast<Exp*>($5));
+		newLocalVar(gb, funcName, offset, static_cast<Exp*>($5)->reg);
+	
+		printf("DECLARE + EXPR\n"); 
+	}else
+	{
+		fprintf(ybugs, "Error in line %d: variable not defined\n", yylineno);
+	}
+	
+ } 
+ N Expr { isiInFor = true;} SEMI ID ASSIGN Expr { isiInFor = false;} RPAREN Next { printf("FOR");} Statement
+ {
+	std::cout << "---- " << $12->text << " ----- " << $14->text << std::endl;
+	posL.clear();
+	varL2.clear();
+	varL1.clear();
+	trueLabelList.clear();
+	falseLabelList.clear();
+	isOrpe = false;
+	
+	for(int i = 0; i < forParts.size(); i++)
+	{
+		gb.insert_command(forParts[i]);
+	}
+	
+	string type = st.get_element_by_id($12->text).second->text;
+	Token* tk = new Token(type);//"int"
+	
+	validateAssignment(ybugs, yylineno, tk, static_cast<Exp*>($14));
+	int offset = st.getOffsetofId($12->text);
+	
+	newLocalVar(gb, funcName, offset, static_cast<Exp*>($14)->reg);
+	
+	gb.insert_command(" br label %"+startL);
+	gb.insert_command(" "+falseL+":");
+	gb.insert_command(" br label %"+endL);
+	gb.insert_command(" "+endL+":");
+	st.close_stack();
+	forParts.clear();
+ }
+ | FOR LPAREN Type ID ASSIGN Expr SEMI 
+ { 
+	st.open_stack(); 
+	
+	if(!st.isDeclared($4->text))
+	{	
+		st.insert(static_cast<Token*>($4), static_cast<Token*>($3));
+		int offset = st.getOffsetofId($4->text);
+		string type = st.get_element_by_id($4->text).second->text;
+		Token* tk = new Token(type);//"int"
+		
+		validateAssignment(ybugs, yylineno, tk, static_cast<Exp*>($6));
+		newLocalVar(gb, funcName, offset, static_cast<Exp*>($6)->reg);
+	
+		printf("DECLARE + EXPR\n"); 
+	}else
+	{
+		fprintf(ybugs, "Error in line %d: variable already defined\n", yylineno);
+	}
+	
+ } 
+ N Expr { isiInFor = true;} SEMI ID ASSIGN Expr { isiInFor = false;} RPAREN Next { printf("FOR");} Statement
+ {
+	std::cout << "---- " << $13->text << " ----- " << $15->text << std::endl;
+	posL.clear();
+	varL2.clear();
+	varL1.clear();
+	trueLabelList.clear();
+	falseLabelList.clear();
+	isOrpe = false;
+	
+	for(int i = 0; i < forParts.size(); i++)
+	{
+		gb.insert_command(forParts[i]);
+	}
+	
+	string type = st.get_element_by_id($13->text).second->text;
+	Token* tk = new Token(type);//"int"
+	
+	validateAssignment(ybugs, yylineno, tk, static_cast<Exp*>($15));
+	int offset = st.getOffsetofId($13->text);
+	
+	newLocalVar(gb, funcName, offset, static_cast<Exp*>($15)->reg);
+	
+	gb.insert_command(" br label %"+startL);
+	gb.insert_command(" "+falseL+":");
+	gb.insert_command(" br label %"+endL);
+	gb.insert_command(" "+endL+":");
+	st.close_stack();
+	forParts.clear();
+ }
+ |
+ ;
+ 
+Call: 
+ ID LPAREN ExprList RPAREN 
+ {
+	if(st.isFuncDeclared($1->text))
+	{
+		Token* tk = new Token(st.get_func_by_id($1->text).second->text);
+		string type = tk->text;
+		$$ = new Func_Call(static_cast<Token*>($1), static_cast<ExpList*>($3), type);
+		$$->reg = makeFuncCall(gb, static_cast<Token*>($1)->text, static_cast<ExpList*>($3), type);
+	}else
+	{
+		fprintf(ybugs, "Error in line %d: call function that doesnt exist\n", yylineno);
+	}
+ }
+ | ID LPAREN RPAREN 
+ {
+	if(st.isFuncDeclared($1->text))
+	{
+		Token* tk = new Token(st.get_func_by_id($1->text).second->text);
+		string type = tk->text;
+		$$ = new Func_Call(static_cast<Token*>($1), type);
+		$$->reg = makeFuncCall(gb, static_cast<Token*>($1)->text, NULL , type);
+	}else
+	{
+		fprintf(ybugs, "Error in line %d: call function that doesnt exist\n", yylineno);
+	}
+ }
+ ;
+
+Next:
+{
+	gb.insert_command(" "+trueL+":");
+    int add = gb.get_commands_container().size();
+	
+    string label = gb.generate_label();
+    bpatch(gb, makelist({add,FIRST}),label);
+    a = new Base();
+    a->label = label;
+};
+
+N:
+{
+	startL = gb.generate_label(); 
+	gb.insert_command(" br label %"+startL); 
+	gb.insert_command(" "+startL+":");
+};
+
+
+
+ExprList:		
+ Expr { $$ = new ExpList(static_cast<Exp*>($1));}
+ | Expr COMMA ExprList { $$ = new ExpList(static_cast<Exp*>($1), static_cast<ExpList*>($3));}
+ ;
+ 
+ 
+Type:
+ INT { $$ = $1;}
+ | FLOAT { $$ = $1; }
+ | DOUBLE { $$ = $1; }
+ | CHAR { $$ = $1; }
+ ;
+ 
+Expr:
+ LPAREN Expr RPAREN { $$ = $2; }
+ | ID 
+ { 
+	//sym.is_variable_exsists($1);
+	if(st.isDeclared($1->text))
+	{
+		bool isGlobal = false;
+		string globalVar = "";
+		int offset = st.getOffsetofId($1->text);
+		Exp* exp = new Exp(st.get_element_by_id($1->text).second->text);
+		$$ = exp;
+		
+		for(int i = 0; i < globals.size(); i++)
+		{
+			if($1->text == globals[i])
+			{
+				globalVar = globals[i];
+				isGlobal = true;
+			}
+		}
+		
+		if(!isGlobal)
+		{
+			if(!isiInFor)
+			{
+				$$->reg = loadVar(gb,funcName, offset);
+			}else
+			{
+				$$->reg = loadVar_For(forParts, funcName, offset);
+			}
+		}else
+		{
+			$$->reg = loadGloVar(gb, globalVar);
+		}
+		
+	}else
+	{
+		fprintf(ybugs, "Error in line %d: variable undefined\n", yylineno);
+	}
+	
+ }
+ | INTEGER 
+ { 
+	$$ = new Num($1->text);
+	$$->reg = freshReg();
+	
+	if(!isGlobalDec)
+	{
+		if(!isiInFor)
+		{
+			gb.insert_command(" "+$$->reg + "= add i32 0," + static_cast<Num*>($$)->value->text);
+		}else
+		{
+			forParts.push_back(" "+$$->reg + "= add i32 0," + static_cast<Num*>($$)->value->text);
+		}
+	}
+ }
+ | STRING
+ {
+	$$ = new StringExp(static_cast<Token*>($1));
+	$$->reg = setGlobalString(gb, $1->text);
+ }
+ | Expr PLUS Expr 
+ { 
+	checkNumber(ybugs, yylineno, static_cast<Exp*>($1), static_cast<Exp*>($3));
+	$$ = $3;
+	Binop* b = new Binop(static_cast<Exp*>($1), static_cast<Token*>($2), static_cast<Exp*>($3)); 
+	if(!isiInFor)
+	{
+		$$->reg = Operate_PlusMinus(gb, b);
+	}else
+	{
+		$$->reg = Operate_PlusMinus_For(forParts, b);
+	}
+ }
+ | Expr MINUN Expr 
+ {
+	checkNumber(ybugs, yylineno, static_cast<Exp*>($1), static_cast<Exp*>($3));
+	$$ = $3;
+	Binop* b = new Binop(static_cast<Exp*>($1), static_cast<Token*>($2), static_cast<Exp*>($3));  
+	if(!isiInFor)
+	{
+		$$->reg = Operate_PlusMinus(gb, b);
+	}else
+	{
+		$$->reg = Operate_PlusMinus_For(forParts, b);
+	}
+ }
+ | Expr DIV Expr 
+ {
+	checkNumber(ybugs, yylineno, static_cast<Exp*>($1), static_cast<Exp*>($3));
+	$$ = $3;
+	Binop* b = new Binop(static_cast<Exp*>($1), static_cast<Token*>($2), static_cast<Exp*>($3));
+	if(!isiInFor)
+	{
+		$$->reg = Operate_MultiplyDivide(gb, b);
+	}else
+	{
+		$$->reg = Operate_MultiplyDivide_For(forParts, b);
+	}
+ }
+ | Expr MUL Expr 
+ {
+	checkNumber(ybugs, yylineno, static_cast<Exp*>($1), static_cast<Exp*>($3));
+	$$ = $3;
+	Binop* b = new Binop(static_cast<Exp*>($1), static_cast<Token*>($2), static_cast<Exp*>($3));
+	if(!isiInFor)
+	{	
+		$$->reg = Operate_MultiplyDivide(gb, b);
+	}else
+	{
+		$$->reg = Operate_MultiplyDivide_For(forParts, b);
+	}
+ }
+ | Expr OR Expr 
+ {
+	$$ = new Or(static_cast<Exp*>($1), static_cast<Exp*>($3)); 
+	
+	varL2.push_back($1->reg);
+	isOrpe = true;
+	
+	trueLabelList.push_back(trueL);
+	
+	gb.insert_command(" "+falseL+":");
+   	
+	
+ }
+ | Expr AND Expr 
+ {
+	$$ = new And(static_cast<Exp*>($1), static_cast<Exp*>($3));
+	
+	varL2.push_back($1->reg);
+	isOrpe = true;
+	
+	falseLabelList.push_back(falseL);
+	
+	gb.insert_command(" "+trueL+":");
+ }
+ | Expr EQ Expr 
+ { 
+	checkNumber(ybugs, yylineno, static_cast<Exp*>($1), static_cast<Exp*>($3));
+	$$ = new Relop(static_cast<Exp*>($1), static_cast<Token*>($2), static_cast<Exp*>($3));
+	string new_reg = freshReg();
+    
+	varL1.push_back($1->reg);
+	varL2.push_back($3->reg);
+	opersList.push_back("eq");
+	
+	if(trueLabelList.size() > 0)
+	{
+		trueL = trueLabelList[trueLabelList.size()-1];
+	}else
+	{
+		trueL = gb.generate_label();
+	}
+	
+	gb.insert_command(" "+new_reg + " = icmp eq  i32 " +$1->reg + ", " + $3->reg);
+	posL.push_back(gb.get_commands_container().size()-1);
+	
+	if(isOrpe)
+	{
+		replaceStatement(gb);
+	}
+	if(falseLabelList.size() > 0)
+	{
+		falseL = falseLabelList[falseLabelList.size()-1];
+	}else
+	{
+		falseL = gb.generate_label();
+	}
+	
+	endL = gb.generate_label();
+	
+	gb.insert_command(" br i1 " + new_reg +", label %"+trueL+", label %"+falseL);
+	
+   	int addr = gb.get_commands_container().size();
+    $$->truelist = makelist({addr,FIRST});
+    $$->falselist = makelist({addr,SECOND});
+ }
+ | Expr B Expr 
+ {
+	checkNumber(ybugs, yylineno, static_cast<Exp*>($1), static_cast<Exp*>($3));
+	$$ = new Relop(static_cast<Exp*>($1), static_cast<Token*>($2), static_cast<Exp*>($3));
+	string new_reg = freshReg();
+    
+	varL1.push_back($1->reg);
+	varL2.push_back($3->reg);
+	opersList.push_back("sgt");
+	
+	if(trueLabelList.size() > 0)
+	{
+		trueL = trueLabelList[trueLabelList.size()-1];
+	}else
+	{
+		trueL = gb.generate_label();
+	}
+	
+    gb.insert_command(" "+new_reg + " = icmp sgt i32 " +$1->reg + ", " + $3->reg);
+	posL.push_back(gb.get_commands_container().size()-1);
+	
+	if(isOrpe)
+	{
+		replaceStatement(gb);
+	}
+	if(falseLabelList.size() > 0)
+	{
+		falseL = falseLabelList[falseLabelList.size()-1];
+	}else
+	{
+		falseL = gb.generate_label();
+	}
+	endL = gb.generate_label();
+	
+	
+	gb.insert_command(" br i1 " + new_reg +", label %"+trueL+", label %"+falseL);
+   	int addr = gb.get_commands_container().size();
+    $$->truelist = makelist({addr,FIRST});
+    $$->falselist = makelist({addr,SECOND});
+ }
+ | Expr L Expr 
+ {  
+	checkNumber(ybugs, yylineno, static_cast<Exp*>($1), static_cast<Exp*>($3));
+	$$ = new Relop(static_cast<Exp*>($1), static_cast<Token*>($2), static_cast<Exp*>($3));
+	string new_reg = freshReg();
+    varL1.push_back($1->reg);
+	varL2.push_back($3->reg);
+	opersList.push_back("slt");
+	
+	if(trueLabelList.size() > 0)
+	{
+		trueL = trueLabelList[trueLabelList.size()-1];
+	}else
+	{
+		trueL = gb.generate_label();
+	}
+	
+    gb.insert_command(" "+new_reg + " = icmp slt i32 " +$1->reg + ", " + $3->reg);
+	posL.push_back(gb.get_commands_container().size()-1);
+	
+	if(isOrpe)
+	{
+		replaceStatement(gb);
+	}
+	if(falseLabelList.size() > 0)
+	{
+		falseL = falseLabelList[falseLabelList.size()-1];
+	}else
+	{
+		falseL = gb.generate_label();
+	}
+	endL = gb.generate_label();
+	gb.insert_command(" br i1 " + new_reg +", label %"+trueL+", label %"+falseL);
+	
+   	int addr = gb.get_commands_container().size();
+    $$->truelist = makelist({addr,FIRST});
+    $$->falselist = makelist({addr,SECOND});
+ }
+ | Expr BE Expr 
+ {  
+	checkNumber(ybugs, yylineno, static_cast<Exp*>($1), static_cast<Exp*>($3));
+	$$ = new Relop(static_cast<Exp*>($1), static_cast<Token*>($2), static_cast<Exp*>($3));
+	string new_reg = freshReg();
+    varL1.push_back($1->reg);
+	varL2.push_back($3->reg);
+	opersList.push_back("sge");
+	
+	if(trueLabelList.size() > 0)
+	{
+		trueL = trueLabelList[trueLabelList.size()-1];
+	}else
+	{
+		trueL = gb.generate_label();
+	}
+	
+    gb.insert_command(" "+new_reg + " = icmp sge i32 " +$1->reg + ", " + $3->reg);
+	posL.push_back(gb.get_commands_container().size()-1);
+	
+	if(isOrpe)
+	{
+		replaceStatement(gb);
+	}
+	if(falseLabelList.size() > 0)
+	{
+		falseL = falseLabelList[falseLabelList.size()-1];
+	}else
+	{
+		falseL = gb.generate_label();
+	}
+	endL = gb.generate_label();
+	
+	gb.insert_command(" br i1 " + new_reg +", label %"+trueL+", label %"+falseL);
+	
+   	int addr = gb.get_commands_container().size();
+    $$->truelist = makelist({addr,FIRST});
+    $$->falselist = makelist({addr,SECOND});
+ }
+ | Expr LE Expr 
+ {  
+	checkNumber(ybugs, yylineno, static_cast<Exp*>($1), static_cast<Exp*>($3));
+	$$ = new Relop(static_cast<Exp*>($1), static_cast<Token*>($2), static_cast<Exp*>($3));
+	string new_reg = freshReg();
+    varL1.push_back($1->reg);
+	varL2.push_back($3->reg);
+	opersList.push_back("sle");
+	
+	if(trueLabelList.size() > 0)
+	{
+		trueL = trueLabelList[trueLabelList.size()-1];
+	}else
+	{
+		trueL = gb.generate_label();
+	}
+	
+    gb.insert_command(" "+new_reg + " = icmp sle i32 " +$1->reg + ", " + $3->reg);
+	posL.push_back(gb.get_commands_container().size()-1);
+	
+	if(isOrpe)
+	{
+		replaceStatement(gb);
+	}
+	if(falseLabelList.size() > 0)
+	{
+		falseL = falseLabelList[falseLabelList.size()-1];
+	}else
+	{
+		falseL = gb.generate_label();
+	}
+	endL = gb.generate_label();
+	gb.insert_command(" br i1 " + new_reg +", label %"+trueL+", label %"+falseL);
+	
+   	int addr = gb.get_commands_container().size();
+    $$->truelist = makelist({addr,FIRST});
+    $$->falselist = makelist({addr,SECOND});
+ }
+ ;
+ 
+
+%%
+void yyerror(const char* s) {
+ printf("\n        ^\n");
+ printf("        |\n");
+ printf("%s\n", s);
+ fprintf(ybugs,"%s In Line: %d\n", s, yylineno);
+}
+
+
+int main(int argc, char *argv[]) 
+{	
+	printf("File Tested: %s\n", argv[1]);
+	printf("Output File: out.ll\n");
+	printf("Dump File: dump.txt\n\n");
+	
+	yyin = fopen(argv[1], "r");
+	yyout = fopen("out.ll", "w");
+	ybugs = fopen("dump.txt", "w");
+	
+	if(yyin != NULL)
+	{
+		st.open_stack();
+		
+		yyparse();
+		
+		st.close_stack();
+		fclose(yyin);
+	}else
+	{
+		fprintf(ybugs, "Error:\nFile Tested Not Found");
+	}
+	
+	gb.write_global_container_to_file(yyout);
+	gb.write_container_to_file(yyout);
+	
+	fclose(ybugs);
+	fclose(yyout);
+    return 0;
+}
+
+void replaceStatement(global_buffer& gb)
+{
+	std::vector<string> abc;
+	
+	for(int i = 0; i < varL1.size(); i++)
+	{
+		abc.push_back(opersList[i]+" i32 " +varL1[i] + ", " + varL2[i]);
+	}
+	gb.replaceLine(abc, posL);
+	
+}
+
+int getLen(FILE* yyout)
+{
+	fclose(yyout);
+	std::string line;
+	int count = -1;
+	
+	std::ifstream myfile("out.ll");
+	if (myfile.is_open())
+	{
+		while (std::getline(myfile, line))
+		{
+			count++;
+		}
+		myfile.close();
+	}
+	yyout = fopen("out.ll", "w");
+	return count;
+}
+
+std::vector<string> getArgs(ParamList *list)
+{
+	std::vector<string> args;
+	ParamList* temp = list;
+    while (temp != NULL) {
+        if(temp->getParamDec() != NULL) {
+			st.insert(temp->getParamDec()->get_id(), temp->getParamDec()->get_type());
+            args.push_back(temp->getParamDec()->get_type()->text);
+        }
+        temp = temp->getNextParam();
+    }
+	return args;
+}
+
